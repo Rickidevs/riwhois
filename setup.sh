@@ -13,7 +13,7 @@ SCRIPT_NAME="main.py"
 
 echo -e "${BLUE}"
 echo "╔══════════════════════════════════════════════════════════════╗"
-echo "║               ADVANCED WHOIS TOOL INSTALLATION               ║"
+echo "║                    RIWHOIS  INSTALLATION                     ║"
 echo "╚══════════════════════════════════════════════════════════════╝"
 echo -e "${NC}"
 
