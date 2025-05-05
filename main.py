@@ -39,25 +39,126 @@ class WhoisTool:
     def get_domains_from_ip(self, ip_address):
         try:
             print(f"{Fore.YELLOW}[*] Looking up domains for {ip_address}...{Style.RESET_ALL}")
-            
-            hostname = socket.getfqdn(ip_address)
-            domains = [hostname] if hostname != ip_address else []
+
+            try:
+                hostname = socket.getfqdn(ip_address)
+                domains = [hostname] if hostname != ip_address else []
+            except:
+                domains = []
             
             try:
-                response = requests.get(f"https://api.hackertarget.com/reverseiplookup/?q={ip_address}", timeout=5)
-                if response.status_code == 200 and len(response.text) > 0 and "error" not in response.text.lower():
-                    domains_from_api = response.text.strip().split('\n')
-                    domains.extend(domains_from_api)
-            except requests.RequestException:
-                pass
+                print(f"{Fore.CYAN}[→] Trying local DNS resolution...{Style.RESET_ALL}")
+                addr = socket.gethostbyaddr(ip_address)
+                if addr and addr[0] and addr[0] != ip_address:
+                    domains.append(addr[0])
+                    print(f"{Fore.GREEN}[+] Local DNS returned: {addr[0]}{Style.RESET_ALL}")
+            except socket.herror:
+                print(f"{Fore.YELLOW}[!] No PTR record found for {ip_address}{Style.RESET_ALL}")
+            except Exception as e:
+                print(f"{Fore.RED}[!] DNS resolution error: {str(e)}{Style.RESET_ALL}")
+
+            apis = [
+                {
+                    "url": f"https://api.hackertarget.com/reverseiplookup/?q={ip_address}",
+                    "name": "HackerTarget",
+                    "process": lambda response: [
+                        domain for domain in response.text.strip().split('\n') 
+                        if domain and domain != "No records found" and "API count exceeded" not in domain and "error" not in domain.lower()
+                    ]
+                },
+                {
+                    "url": f"https://dns.google/resolve?name={'.'.join(reversed(ip_address.split('.')))}.in-addr.arpa&type=PTR",
+                    "name": "Google DNS",
+                    "process": lambda response: [
+                        answer["data"].rstrip('.') 
+                        for answer in response.json().get("Answer", []) 
+                        if answer.get("type") == 12  # PTR record type
+                    ] if response.status_code == 200 and "Answer" in response.json() else []
+                },
+                {
+                    "url": f"https://networksdb.io/ip/{ip_address}",
+                    "name": "NetworksDB (Web Scrape)",
+                    "process": lambda response: [
+                        line.strip() for line in response.text.split('\n') 
+                        if "href='/domain/" in line and "</a>" in line
+                    ]
+                }
+            ]
+
+            for api in apis:
+                try:
+                    print(f"{Fore.CYAN}[→] Trying {api['name']} API...{Style.RESET_ALL}")
+                    
+                    response = requests.get(api["url"], timeout=20)
+                    
+                    if not response.text or response.status_code != 200:
+                        print(f"{Fore.RED}[!] {api['name']} returned empty or error response (Code: {response.status_code}){Style.RESET_ALL}")
+                        continue
+                    
+                    if api["name"] == "HackerTarget" and ("API count exceeded" in response.text or "No DNS A records found" in response.text):
+                        print(f"{Fore.RED}[!] HackerTarget limit reached or no records found{Style.RESET_ALL}")
+                        continue
+                        
+                    new_domains = api["process"](response)
+                    
+                    if api["name"] == "NetworksDB (Web Scrape)" and new_domains:
+                        clean_domains = []
+                        for line in new_domains:
+                            if "href='/domain/" in line:
+                                domain = line.split("href='/domain/")[1].split("'")[0]
+                                if domain and domain != ip_address:
+                                    clean_domains.append(domain)
+                        new_domains = clean_domains
+                    
+                    new_domains = [d for d in new_domains if d and d != ip_address and isinstance(d, str)]
+                    
+                    if new_domains:
+                        domains.extend(new_domains)
+                        print(f"{Fore.GREEN}[+] {api['name']} returned {len(new_domains)} domains{Style.RESET_ALL}")
+                    else:
+                        print(f"{Fore.YELLOW}[!] {api['name']} returned no valid domains{Style.RESET_ALL}")
+                
+                except requests.exceptions.Timeout:
+                    print(f"{Fore.RED}[!] {api['name']} request timed out, trying next API...{Style.RESET_ALL}")
+                    continue
+                except requests.exceptions.ConnectionError:
+                    print(f"{Fore.RED}[!] {api['name']} connection error, trying next API...{Style.RESET_ALL}")
+                    continue
+                except Exception as e:
+                    print(f"{Fore.RED}[!] {api['name']} failed: {str(e)}{Style.RESET_ALL}")
+                    continue
+
+            if len(domains) == 0:
+                try:
+                    print(f"{Fore.CYAN}[→] Trying WHOIS lookup for additional information...{Style.RESET_ALL}")
+                    whois_data = whois.whois(ip_address)
+                    if whois_data and hasattr(whois_data, 'domain_name') and whois_data.domain_name:
+                        if isinstance(whois_data.domain_name, list):
+                            domains.extend(whois_data.domain_name)
+                        else:
+                            domains.append(whois_data.domain_name)
+                        print(f"{Fore.GREEN}[+] Found domain from WHOIS: {whois_data.domain_name}{Style.RESET_ALL}")
+                except Exception as e:
+                    print(f"{Fore.RED}[!] WHOIS lookup failed: {str(e)}{Style.RESET_ALL}")
+
+            unique_domains = []
+            for domain in domains:
+                if domain and domain != ip_address and domain not in unique_domains:
+                    unique_domains.append(domain)
             
-            domains = list(set([d for d in domains if d != ip_address and d.strip()]))
+            unique_domains.sort()
             
-            return domains
+            if unique_domains:
+                print(f"{Fore.GREEN}[+] Total unique domains found: {len(unique_domains)}{Style.RESET_ALL}")
+            else:
+                print(f"{Fore.YELLOW}[!] No domains found for {ip_address}{Style.RESET_ALL}")
+                
+            return unique_domains
+
         except Exception as e:
             print(f"{Fore.RED}[!] Error retrieving domains: {str(e)}{Style.RESET_ALL}")
             return []
-    
+        
     def get_ip_from_domain(self, domain):
         try:
             print(f"{Fore.YELLOW}[*] Looking up IP address for domain {domain}...{Style.RESET_ALL}")
